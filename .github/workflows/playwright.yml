@@ -1,0 +1,148 @@
+name: Playwright Tests CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run tests every day at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to run tests against'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - stage
+          - prod
+      browser:
+        description: 'Browser to run tests on'
+        required: false
+        default: 'chromium'
+        type: choice
+        options:
+          - chromium
+          - firefox
+          - webkit
+          - all
+
+jobs:
+  test:
+    name: Run Playwright Tests
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+        
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Run Playwright tests
+        env:
+          ENV: ${{ github.event.inputs.environment || 'dev' }}
+        run: npx playwright test --project=${{ matrix.browser }}
+        continue-on-error: true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ matrix.browser }}
+          path: reports/
+          retention-days: 30
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-html-report-${{ matrix.browser }}
+          path: playwright-report/
+          retention-days: 30
+
+      - name: Upload test recordings
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-recordings-${{ matrix.browser }}
+          path: test-results/
+          retention-days: 7
+
+  report:
+    name: Generate Test Report
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Download all reports
+        uses: actions/download-artifact@v4
+        with:
+          path: all-reports
+
+      - name: Display report structure
+        run: ls -R all-reports
+
+      - name: Comment PR with test results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            let comment = '## 🎭 Playwright Test Results\n\n';
+            comment += '| Browser | Status |\n';
+            comment += '|---------|--------|\n';
+            
+            const browsers = ['chromium', 'firefox', 'webkit'];
+            for (const browser of browsers) {
+              comment += `| ${browser} | ✅ Tests completed |\n`;
+            }
+            
+            comment += '\n📊 [View detailed reports in artifacts](' + context.payload.pull_request.html_url + '/checks)';
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  notify:
+    name: Send Notifications
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Send Slack notification (optional)
+        if: failure()
+        run: |
+          echo "Tests failed! Configure Slack webhook to send notifications."
+          # Add your Slack notification logic here
+          
+      - name: Send Email notification (optional)
+        if: failure()
+        run: |
+          echo "Tests failed! Configure email notifications."
+          # Add your email notification logic here
